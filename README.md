@@ -18,13 +18,13 @@ A beautiful cross-platform command-line tool to display active network ports and
 ### Using go install (recommended)
 
 ```bash
-go install github.com/YOUR_USERNAME/show-port@latest
+go install github.com/belm/show-port@latest
 ```
 
 ### Build from source
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/show-port.git
+git clone https://github.com/belm/show-port.git
 cd show-port
 go build -o show-port
 ```
@@ -217,7 +217,7 @@ Give a ⭐️ if this project helped you!
 
 ## 📧 Contact
 
-Created by [YOUR_NAME] - feel free to reach out!
+Created by [belm] - feel free to reach out!
 
 ---
 
