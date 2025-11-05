@@ -1,9 +1,11 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -27,6 +29,17 @@ type PortInfo struct {
 	ConnCount    int // Number of connections for this port
 }
 
+// PortRemark stores custom remarks for ports
+type PortRemark struct {
+	Port   uint32 `json:"port"`
+	Remark string `json:"remark"`
+}
+
+// RemarksConfig stores all port remarks
+type RemarksConfig struct {
+	Remarks []PortRemark `json:"remarks"`
+}
+
 const version = "1.0.0"
 
 var (
@@ -37,6 +50,9 @@ var (
 	listenOnly     = flag.Bool("listen", false, "Show only LISTEN ports (default mode)")
 	allConns       = flag.Bool("all", false, "Show all connections (not aggregated)")
 	showVersion    = flag.Bool("version", false, "Show version information")
+	addRemark      = flag.String("remark", "", "Add remark for port (format: PORT:REMARK, e.g., 3000:MyApp)")
+	listRemarks    = flag.Bool("list-remarks", false, "List all port remarks")
+	removeRemark   = flag.Int("remove-remark", 0, "Remove remark for port")
 )
 
 // Common service names by port number
@@ -69,6 +85,30 @@ var serviceMap = map[uint32]string{
 
 func main() {
 	flag.Parse()
+
+	// Handle remark operations
+	if *addRemark != "" {
+		if err := addPortRemark(*addRemark); err != nil {
+			fmt.Fprintf(os.Stderr, "Error adding remark: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("Remark added successfully!")
+		return
+	}
+
+	if *listRemarks {
+		listPortRemarks()
+		return
+	}
+
+	if *removeRemark > 0 {
+		if err := removePortRemark(uint32(*removeRemark)); err != nil {
+			fmt.Fprintf(os.Stderr, "Error removing remark: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("Remark removed successfully!")
+		return
+	}
 
 	// Show version if requested
 	if *showVersion {
@@ -172,8 +212,10 @@ func getUsedPorts() ([]PortInfo, error) {
 			portInfo.ProcessName = "-"
 		}
 
-		// Add service name
-		if serviceName, ok := serviceMap[portInfo.LocalPort]; ok {
+		// Add service name (prioritize custom remarks)
+		if customRemark := getPortRemark(portInfo.LocalPort); customRemark != "" {
+			portInfo.ServiceName = customRemark
+		} else if serviceName, ok := serviceMap[portInfo.LocalPort]; ok {
 			portInfo.ServiceName = serviceName
 		} else {
 			portInfo.ServiceName = "-"
@@ -351,4 +393,140 @@ func displayPorts(ports []PortInfo) {
 			fmt.Printf("%-20s\n", status)
 		}
 	}
+}
+
+// getRemarksFile returns the path to the remarks configuration file
+func getRemarksFile() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "port-remarks.json"
+	}
+	return filepath.Join(home, ".show-port-remarks.json")
+}
+
+// loadRemarks loads port remarks from file
+func loadRemarks() (RemarksConfig, error) {
+	var config RemarksConfig
+	file := getRemarksFile()
+	
+	if _, err := os.Stat(file); os.IsNotExist(err) {
+		return config, nil // Return empty config if file doesn't exist
+	}
+	
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return config, err
+	}
+	
+	err = json.Unmarshal(data, &config)
+	return config, err
+}
+
+// saveRemarks saves port remarks to file
+func saveRemarks(config RemarksConfig) error {
+	file := getRemarksFile()
+	data, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return err
+	}
+	
+	return os.WriteFile(file, data, 0644)
+}
+
+// getPortRemark retrieves the custom remark for a port
+func getPortRemark(port uint32) string {
+	config, err := loadRemarks()
+	if err != nil {
+		return ""
+	}
+	
+	for _, remark := range config.Remarks {
+		if remark.Port == port {
+			return remark.Remark
+		}
+	}
+	return ""
+}
+
+// addPortRemark adds a new remark for a port
+func addPortRemark(remarkStr string) error {
+	parts := strings.SplitN(remarkStr, ":", 2)
+	if len(parts) != 2 {
+		return fmt.Errorf("invalid format. Use PORT:REMARK (e.g., 3000:MyApp)")
+	}
+	
+	port, err := strconv.ParseUint(strings.TrimSpace(parts[0]), 10, 32)
+	if err != nil {
+		return fmt.Errorf("invalid port number: %v", err)
+	}
+	
+	remark := strings.TrimSpace(parts[1])
+	if remark == "" {
+		return fmt.Errorf("remark cannot be empty")
+	}
+	
+	config, err := loadRemarks()
+	if err != nil {
+		return err
+	}
+	
+	// Remove existing remark for this port if it exists
+	for i, r := range config.Remarks {
+		if r.Port == uint32(port) {
+			config.Remarks = append(config.Remarks[:i], config.Remarks[i+1:]...)
+			break
+		}
+	}
+	
+	// Add new remark
+	config.Remarks = append(config.Remarks, PortRemark{
+		Port:   uint32(port),
+		Remark: remark,
+	})
+	
+	return saveRemarks(config)
+}
+
+// listPortRemarks displays all configured port remarks
+func listPortRemarks() {
+	config, err := loadRemarks()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading remarks: %v\n", err)
+		return
+	}
+	
+	if len(config.Remarks) == 0 {
+		fmt.Println("No port remarks configured.")
+		return
+	}
+	
+	cyan := color.New(color.FgCyan, color.Bold)
+	cyan.Println("\nConfigured Port Remarks:")
+	fmt.Println("─────────────────────────────")
+	
+	green := color.New(color.FgGreen)
+	yellow := color.New(color.FgYellow, color.Bold)
+	
+	for _, remark := range config.Remarks {
+		yellow.Printf("Port %-8d ", remark.Port)
+		green.Printf("→ %s\n", remark.Remark)
+	}
+	fmt.Println()
+}
+
+// removePortRemark removes a remark for a port
+func removePortRemark(port uint32) error {
+	config, err := loadRemarks()
+	if err != nil {
+		return err
+	}
+	
+	for i, remark := range config.Remarks {
+		if remark.Port == port {
+			config.Remarks = append(config.Remarks[:i], config.Remarks[i+1:]...)
+			return saveRemarks(config)
+		}
+	}
+	
+	return fmt.Errorf("no remark found for port %d", port)
 }
